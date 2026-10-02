@@ -1,3 +1,5 @@
 aiogram
 translators
 asyncio
+SpeechRecognition
+pydub
