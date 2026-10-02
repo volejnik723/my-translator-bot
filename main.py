@@ -1,133 +1,150 @@
 import asyncio
+import os
 import translators as ts
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+import speech_recognition as sr
+from pydub import AudioSegment
 
+# Токен вашего бота
 TOKEN = "8850219341:AAEKd3ZWEg7UZ09DRitSsK2744RYSpUUkDo"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Временное хранилище текстов в памяти бота
 user_texts = {}
 
+# Словарь языков
 LANGUAGES = {
-    "en": ("🇺🇸", "Английский"),
-    "ru": ("🇷🇺", "Русский"),
-    "de": ("🇩🇪", "Немецкий"),
-    "fr": ("🇫🇷", "Французский"),
-    "es": ("🇪🇸", "Испанский"),
-    "it": ("🇮🇹", "Итальянский"),
-    "zh": ("🇨🇳", "Китайский"),
-    "ja": ("🇯🇵", "Японский"),
-    "ko": ("🇰🇷", "Корейский"),
-    "ar": ("🇸🇦", "Арабский"),
-    "tr": ("🇹🇷", "Турецкий"),
-    "pl": ("🇵🇱", "Польский"),
-    "uk": ("🇺🇦", "Украинский"),
-    "kk": ("🇰🇿", "Казахский"),
-    "by": ("🇧🇾", "Белорусский"),
-    "it": ("🇮🇹", "Итальянский"),
-    "pt": ("🇵🇹", "Португальский"),
-    "nl": ("🇳🇱", "Нидерландский"),
-    "sv": ("🇸🇪", "Шведский"),
-    "cs": ("🇨🇿", "Чешский"),
-    "he": ("🇮🇱", "Иврит")
+    "en": ("🇺🇸", "Английский"), "ru": ("🇷🇺", "Русский"), "de": ("🇩🇪", "Немецкий"),
+    "fr": ("🇫🇷", "Французский"), "es": ("🇪🇸", "Испанский"), "it": ("🇮🇹", "Итальянский"),
+    "zh": ("🇨🇳", "Китайский"), "ja": ("🇯🇵", "Японский"), "ko": ("🇰🇷", "Корейский"),
+    "ar": ("🇸🇦", "Арабский"), "tr": ("🇹🇷", "Турецкий"), "pl": ("🇵🇱", "Польский"),
+    "uk": ("🇺🇦", "Украинский"), "kk": ("🇰🇿", "Казахский"), "by": ("🇧🇾", "Белорусский"),
+    "pt": ("🇵🇹", "Португальский"), "nl": ("🇳🇱", "Нидерландский"), "sv": ("🇸🇪", "Шведский"),
+    "cs": ("🇨🇿", "Чешский"), "he": ("🇮🇱", "Иврит")
 }
 
+# Система перевода
 async def translate_text(text: str, target_lang: str) -> str:
-    """
-    Переводит текст через Bing. При сбое автоматически переключается на Google.
-    """
     try:
         translated = await asyncio.to_thread(
             lambda: ts.translate_text(text, from_language='auto', to_language=target_lang, translator='bing')
         )
-        if translated:
-            return translated
-    except Exception as e:
-        print(f"[Резерв] Bing не ответил, пробую Google: {e}")
-
+        if translated: return translated
+    except Exception:
+        pass
     try:
         translated = await asyncio.to_thread(
             lambda: ts.translate_text(text, from_language='auto', to_language=target_lang, translator='google')
         )
-        if translated:
-            return translated
-    except Exception as e:
-        print(f"[Критическая ошибка] Все сервера заняты: {e}")
-        
+        if translated: return translated
+    except Exception:
+        pass
     return "ошибка_перевода"
 
+# Сетка кнопок
 def get_language_keyboard():
     builder = InlineKeyboardBuilder()
     for code, (emoji, name) in LANGUAGES.items():
-        # callback_data теперь формируется автоматически, например: "to_lang:en"
         builder.add(types.InlineKeyboardButton(text=f"{emoji} {name}", callback_data=f"to_lang:{code}"))
-    
-    # adjust(3) выстраивает кнопки в красивую сетку по 3 штуки в строке
     builder.adjust(3)
     return builder.as_markup()
 
-# Обработчик команды /start
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
-        "Привет! Я продвинутый бот-переводчик. Поддерживаю более 20 языков мира!\n\n"
-        "Напиши мне любой текст, а затем выбери язык для перевода на клавиатуре ниже:",
+        "Привет! Я продвинутый бот-переводчик.\n\n"
+        "Вы можете отправить мне **обычный текст** или **записать голосовое сообщение**, "
+        "а затем выбрать язык для перевода!",
+        parse_mode="Markdown",
         reply_markup=get_language_keyboard()
     )
 
-# Обработчик входящего текста
+# НОВЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
+@dp.message(F.voice)
+async def handle_voice(message: types.Message):
+    status_msg = await message.answer("⏳ Скачиваю и распознаю ваше голосовое сообщение...")
+    
+    # Пути для сохранения аудио во временные файлы
+    voice_ogg = f"voice_{message.from_user.id}.ogg"
+    voice_wav = f"voice_{message.from_user.id}.wav"
+    
+    try:
+        # 1. Скачиваем аудиофайл из Telegram (он приходит в формате .ogg)
+        file_info = await bot.get_file(message.voice.file_id)
+        await bot.download_file(file_info.file_path, voice_ogg)
+        
+        # 2. Конвертируем .ogg в .wav формат (этого требует библиотека распознавания)
+        audio = AudioSegment.from_ogg(voice_ogg)
+        audio.export(voice_wav, format="wav")
+        
+        # 3. Распознаем речь с помощью Google Speech Recognition
+        r = sr.Recognizer()
+        with sr.AudioFile(voice_wav) as source:
+            audio_data = r.record(source)
+            # Язык распознавания по умолчанию — русский. Если надиктуют на английском, можно сменить на 'en-US'
+            recognized_text = r.recognize_google(audio_data, language="ru-RU")
+            
+        if not recognized_text.strip():
+            raise Exception("Пустой текст")
+            
+        # Сохраняем распознанный текст в память, как если бы пользователь сам его написал
+        user_texts[message.from_user.id] = recognized_text
+        
+        await status_msg.edit_text(
+            f"🗣 **Распознанный текст:**\n_«{recognized_text}»_\n\nНа какой язык его перевести?",
+            parse_mode="Markdown",
+            reply_markup=get_language_keyboard()
+        )
+        
+    except sr.UnknownValueError:
+        await status_msg.edit_text("❌ Не удалось разобрать слова. Пожалуйста, скажите громче и разборчивее.")
+    except Exception as e:
+        print(f"Ошибка аудио: {e}")
+        await status_msg.edit_text("❌ Не удалось распознать голосовое сообщение. Попробуйте отправить текст.")
+    finally:
+        # Удаляем временные аудиофайлы, чтобы не забивать память сервера
+        if os.path.exists(voice_ogg): os.remove(voice_ogg)
+        if os.path.exists(voice_wav): os.remove(voice_wav)
+
+# Обработчик текста
 @dp.message()
 async def handle_text(message: types.Message):
-    if not message.text:
-        return
-        
-    # Запоминаем текст пользователя по его ID
+    if not message.text: return
     user_texts[message.from_user.id] = message.text
-        
-    await message.answer(
-        "Текст получен. На какой язык его перевести? Выберите из списка:", 
-        reply_markup=get_language_keyboard()
-    )
+    await message.answer("Текст получен. На какой язык его перевести? Выберите из списка:", reply_markup=get_language_keyboard())
 
-# один обработчик для 21 го языка
+# Обработчик кнопок
 @dp.callback_query(F.data.startswith("to_lang:"))
 async def handle_translation_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     text_to_translate = user_texts.get(user_id, "")
     
     if not text_to_translate:
-        await callback.message.edit_text("Сначала отправьте текст обычным сообщением в чат.")
+        await callback.message.edit_text("Сначала отправьте текст или голосовое сообщение.")
         await callback.answer()
         return
 
-    # Достаем код выбранного языка из callback_data
     target_lang = callback.data.split(":")[1]
     emoji, lang_name = LANGUAGES.get(target_lang, ("🌐", "Выбранный язык"))
 
     await callback.message.edit_text(f"⏳ Перевожу на {lang_name.lower()}...")
-    
-    # Запускаем перевод
     translated = await translate_text(text_to_translate, target_lang=target_lang)
     
     if translated == "ошибка_перевода":
-        await callback.message.edit_text(
-            "⚠️ Не удалось подключиться к серверам перевода. Попробуйте нажать кнопку еще раз."
-        )
+        await callback.message.edit_text("⚠️ Не удалось перевести. Попробуйте еще раз.")
     else:
-        await callback.message.edit_text(
-            f"{emoji} **Перевод на {lang_name.lower()}:**\n\n{translated}", 
-            parse_mode="Markdown"
-        )
+        await callback.message.edit_text(f"{emoji} **Перевод на {lang_name.lower()}:**\n\n{translated}", parse_mode="Markdown")
     await callback.answer()
 
-# Главная функция запуска
 async def main():
-    print("Бот успешно запущен! Доступен 21 язык для перевода.")
+    print("Бот успешно запущен! Доступен перевод голоса и текста.")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
