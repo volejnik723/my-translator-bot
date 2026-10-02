@@ -26,7 +26,7 @@ LANGUAGES = {
     "cs": ("🇨🇿", "Чешский"), "he": ("🇮🇱", "Иврит")
 }
 
-# Система перевода
+# Система перевода с защитой от сбоев
 async def translate_text(text: str, target_lang: str) -> str:
     try:
         translated = await asyncio.to_thread(
@@ -62,12 +62,10 @@ async def cmd_start(message: types.Message):
         reply_markup=get_language_keyboard()
     )
 
-# ОБНОВЛЕННЫЙ НАДЕЖНЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
+# БЕЗОПАСНЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ С ТАЙМАУТОМ
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     status_msg = await message.answer("⏳ Скачиваю и распознаю ваше голосовое сообщение...")
-    
-    # Путь для сохранения файла
     voice_ogg = f"voice_{message.from_user.id}.ogg"
     
     try:
@@ -75,19 +73,21 @@ async def handle_voice(message: types.Message):
         file_info = await bot.get_file(message.voice.file_id)
         await bot.download_file(file_info.file_path, voice_ogg)
         
-        # Читаем бинарные данные файла напрямую без сторонних конвертеров
         with open(voice_ogg, "rb") as f:
             audio_bytes = f.read()
 
-        # Отправляем аудио напрямую в облачный распознаватель Google
         r = sr.Recognizer()
-        # Создаем аудио-объект напрямую из байтов ogg для распознавания
         audio_data = sr.AudioData(audio_bytes, sample_rate=48000, sample_width=2)
         
-        # Распознаем русскую речь через веб-сервис
-        recognized_text = await asyncio.to_thread(
-            lambda: r.recognize_google(audio_data, language="ru-RU")
-        )
+        # Запускаем распознавание с жестким ограничением времени, чтобы сервер Render не убивал бота
+        try:
+            recognized_text = await asyncio.wait_for(
+                asyncio.to_thread(lambda: r.recognize_google(audio_data, language="ru-RU")),
+                timeout=7.0  # Если за 7 секунд сервер не ответил — прерываем операцию
+            )
+        except asyncio.TimeoutError:
+            await status_msg.edit_text("⚠️ Сервер распознавания перегружен. Пожалуйста, попробуйте записать голос еще раз или отправьте текст.")
+            return
             
         if not recognized_text or not recognized_text.strip():
             raise Exception("Пустой текст")
@@ -103,7 +103,7 @@ async def handle_voice(message: types.Message):
         
     except Exception as e:
         print(f"Ошибка распознавания: {e}")
-        await status_msg.edit_text("❌ Не удалось считать аудио на сервере. Пожалуйста, отправьте ваш текст обычным сообщением.")
+        await status_msg.edit_text("❌ Не удалось считать аудио. Пожалуйста, отправьте ваш текст обычным сообщением.")
     finally:
         if os.path.exists(voice_ogg): 
             os.remove(voice_ogg)
@@ -145,4 +145,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
