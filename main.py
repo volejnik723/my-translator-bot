@@ -7,7 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import speech_recognition as sr
 
 # Токен вашего бота
-TOKEN = "8850219341:AAEKd3ZWEg7UZ09DRitSsK2744RYSpUUkDo"
+TOKEN = "8850219341:AAEebSRFfmrvL6BmlVoShOVFMw3zmRCuHkw"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
