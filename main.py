@@ -5,7 +5,8 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import speech_recognition as sr
-from aiohttp import web  # Добавили для веб-сервера на Render
+from aiohttp import web
+from pydub import AudioSegment  # Библиотека для конвертации голоса
 
 # Токен вашего бота
 TOKEN = "8850219341:AAHw_ft-a7imdnQk1fiub0FVzIIdaGHPUiE"
@@ -36,7 +37,6 @@ async def start_web_server():
     app.router.add_get('/', handle_root)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Берем порт, который дает Render, или по дефолту 10000
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
@@ -78,29 +78,28 @@ async def cmd_start(message: types.Message):
         reply_markup=get_language_keyboard()
     )
 
-# ОБНОВЛЕННЫЙ НАДЕЖНЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
+# НОВЫЙ ИСПРАВЛЕННЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     status_msg = await message.answer("⏳ Скачиваю и распознаю ваше голосовое сообщение...")
     
-    # Путь для сохранения файла
     voice_ogg = f"voice_{message.from_user.id}.ogg"
+    voice_wav = f"voice_{message.from_user.id}.wav"
     
     try:
         # Скачиваем аудиофайл из Telegram
         file_info = await bot.get_file(message.voice.file_id)
         await bot.download_file(file_info.file_path, voice_ogg)
         
-        # Читаем бинарные данные файла напрямую без сторонних конвертеров
-        with open(voice_ogg, "rb") as f:
-            audio_bytes = f.read()
+        # Конвертируем OGG в WAV, чтобы Google смог его прочитать
+        audio = AudioSegment.from_file(voice_ogg, format="ogg")
+        audio.export(voice_wav, format="wav")
 
-        # Отправляем аудио напрямую в облачный распознаватель Google
+        # Отправляем WAV файл в распознаватель
         r = sr.Recognizer()
-        # Создаем аудио-объект напрямую из байтов ogg для распознавания
-        audio_data = sr.AudioData(audio_bytes, sample_rate=48000, sample_width=2)
+        with sr.AudioFile(voice_wav) as source:
+            audio_data = r.record(source)
         
-        # Распознаем русскую речь через веб-сервис
         recognized_text = await asyncio.to_thread(
             lambda: r.recognize_google(audio_data, language="ru-RU")
         )
@@ -108,7 +107,6 @@ async def handle_voice(message: types.Message):
         if not recognized_text or not recognized_text.strip():
             raise Exception("Пустой текст")
             
-        # Сохраняем распознанный текст в память
         user_texts[message.from_user.id] = recognized_text
         
         await status_msg.edit_text(
@@ -123,6 +121,8 @@ async def handle_voice(message: types.Message):
     finally:
         if os.path.exists(voice_ogg): 
             os.remove(voice_ogg)
+        if os.path.exists(voice_wav): 
+            os.remove(voice_wav)
 
 # Обработчик текста
 @dp.message()
@@ -155,9 +155,7 @@ async def handle_translation_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 async def main():
-    # Запускаем фоновый веб-сервер для прохождения проверки портов Render
     await start_web_server()
-    
     print("Бот успешно запущен! Доступен перевод голоса и текста.")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
