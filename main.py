@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import speech_recognition as sr
+from aiohttp import web  # Добавили для веб-сервера на Render
 
 # Токен вашего бота
 TOKEN = "8850219341:AAHw_ft-a7imdnQk1fiub0FVzIIdaGHPUiE"
@@ -25,6 +26,21 @@ LANGUAGES = {
     "pt": ("🇵🇹", "Португальский"), "nl": ("🇳🇱", "Нидерландский"), "sv": ("🇸🇪", "Шведский"),
     "cs": ("🇨🇿", "Чешский"), "he": ("🇮🇱", "Иврит")
 }
+
+# Настройки веб-сервера пустышки для Render
+async def handle_root(request):
+    return web.Response(text="Бот работает!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_root)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Берем порт, который дает Render, или по дефолту 10000
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Веб-сервер заглушка успешно запущен на порту {port}")
 
 # Система перевода
 async def translate_text(text: str, target_lang: str) -> str:
@@ -139,6 +155,9 @@ async def handle_translation_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 async def main():
+    # Запускаем фоновый веб-сервер для прохождения проверки портов Render
+    await start_web_server()
+    
     print("Бот успешно запущен! Доступен перевод голоса и текста.")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
