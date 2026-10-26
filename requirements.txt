@@ -1,4 +1,2 @@
 aiogram
-translators
-asyncio
-SpeechRecognition
+aiohttp
