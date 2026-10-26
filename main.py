@@ -1,12 +1,12 @@
 import asyncio
 import os
+import urllib.parse
 import translators as ts
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import speech_recognition as sr
 from aiohttp import web
-from pydub import AudioSegment  # Библиотека для конвертации голоса
 
 # Токен вашего бота
 TOKEN = "8850219341:AAHw_ft-a7imdnQk1fiub0FVzIIdaGHPUiE"
@@ -78,28 +78,23 @@ async def cmd_start(message: types.Message):
         reply_markup=get_language_keyboard()
     )
 
-# НОВЫЙ ИСПРАВЛЕННЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ
+# АВТОНОМНЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ БЕЗ СИСТЕМНЫХ ЗАВИСИМОСТЕЙ
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     status_msg = await message.answer("⏳ Скачиваю и распознаю ваше голосовое сообщение...")
     
     voice_ogg = f"voice_{message.from_user.id}.ogg"
-    voice_wav = f"voice_{message.from_user.id}.wav"
     
     try:
-        # Скачиваем аудиофайл из Telegram
+        # Скачиваем файл из Telegram
         file_info = await bot.get_file(message.voice.file_id)
         await bot.download_file(file_info.file_path, voice_ogg)
         
-        # Конвертируем OGG в WAV, чтобы Google смог его прочитать
-        audio = AudioSegment.from_file(voice_ogg, format="ogg")
-        audio.export(voice_wav, format="wav")
-
-        # Отправляем WAV файл в распознаватель
+        # Считываем аудио напрямую через стандартное распознавание речи
         r = sr.Recognizer()
-        with sr.AudioFile(voice_wav) as source:
+        with sr.AudioFile(voice_ogg) as source:
             audio_data = r.record(source)
-        
+            
         recognized_text = await asyncio.to_thread(
             lambda: r.recognize_google(audio_data, language="ru-RU")
         )
@@ -117,12 +112,24 @@ async def handle_voice(message: types.Message):
         
     except Exception as e:
         print(f"Ошибка распознавания: {e}")
-        await status_msg.edit_text("❌ Не удалось считать аудио на сервере. Пожалуйста, отправьте ваш текст обычным сообщением.")
+        # Если облако ругается на формат, пробуем резервный способ чтения бинарных данных
+        try:
+            with open(voice_ogg, "rb") as f:
+                raw_audio = f.read()
+            r = sr.Recognizer()
+            audio_data = sr.AudioData(raw_audio, sample_rate=48000, sample_width=2)
+            recognized_text = await asyncio.to_thread(lambda: r.recognize_google(audio_data, language="ru-RU"))
+            user_texts[message.from_user.id] = recognized_text
+            await status_msg.edit_text(
+                f"🗣 **Распознанный текст:**\n_«{recognized_text}»_\n\nНа какой язык его перевести?",
+                parse_mode="Markdown",
+                reply_markup=get_language_keyboard()
+            )
+        except Exception:
+            await status_msg.edit_text("❌ Не удалось считать аудио. Пожалуйста, отправьте ваш текст обычным сообщением.")
     finally:
         if os.path.exists(voice_ogg): 
             os.remove(voice_ogg)
-        if os.path.exists(voice_wav): 
-            os.remove(voice_wav)
 
 # Обработчик текста
 @dp.message()
@@ -131,7 +138,7 @@ async def handle_text(message: types.Message):
     user_texts[message.from_user.id] = message.text
     await message.answer("Текст получен. На какой язык его перевести? Выберите из списка:", reply_markup=get_language_keyboard())
 
-# Обработчик кнопок
+# ОБРАБОТЧИК КНОПОК С СУПЕР-ОЗВУЧКОЙ ДЛЯ ВСЕХ ЯЗЫКОВ МИРА
 @dp.callback_query(F.data.startswith("to_lang:"))
 async def handle_translation_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -145,13 +152,27 @@ async def handle_translation_callback(callback: types.CallbackQuery):
     target_lang = callback.data.split(":")[-1]
     emoji, lang_name = LANGUAGES.get(target_lang, ("🌐", "Выбранный язык"))
 
-    await callback.message.edit_text(f"⏳ Перевожу на {lang_name.lower()}...")
+    await callback.message.edit_text(f"⏳ Перевожу и генерирую озвучку на {lang_name.lower()}...")
     translated = await translate_text(text_to_translate, target_lang=target_lang)
     
     if translated == "ошибка_перевода":
         await callback.message.edit_text("⚠️ Не удалось перевести. Попробуйте еще раз.")
-    else:
-        await callback.message.edit_text(f"{emoji} **Перевод на {lang_name.lower()}:**\n\n{translated}", parse_mode="Markdown")
+        await callback.answer()
+        return
+
+    # Формируем прямую ссылку на аудио-произношение от официального Google API
+    encoded_text = urllib.parse.quote(translated)
+    google_tts_url = f"https://google.com{target_lang}&client=tw-ob&q={encoded_text}"
+
+    # Создаем кнопку под сообщением для мгновенного прослушивания звука
+    audio_builder = InlineKeyboardBuilder()
+    audio_builder.add(types.InlineKeyboardButton(text="🔊 Прослушать произношение", url=google_tts_url))
+
+    await callback.message.edit_text(
+        f"{emoji} **Перевод на {lang_name.lower()}:**\n\n{translated}", 
+        parse_mode="Markdown",
+        reply_markup=audio_builder.as_markup()
+    )
     await callback.answer()
 
 async def main():
