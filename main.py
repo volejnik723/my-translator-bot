@@ -1,11 +1,10 @@
 import asyncio
 import os
 import urllib.parse
-import translators as ts
+import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-import speech_recognition as sr
 from aiohttp import web
 
 # Токен вашего бота
@@ -42,22 +41,18 @@ async def start_web_server():
     await site.start()
     print(f"Веб-сервер заглушка успешно запущен на порту {port}")
 
-# Система перевода
+# СВЕРХНАДЁЖНАЯ СИСТЕМА ПЕРЕВОДА ЧЕРЕЗ WEB API GOOGLE
 async def translate_text(text: str, target_lang: str) -> str:
     try:
-        translated = await asyncio.to_thread(
-            lambda: ts.translate_text(text, from_language='auto', to_language=target_lang, translator='bing')
-        )
-        if translated: return translated
-    except Exception:
-        pass
-    try:
-        translated = await asyncio.to_thread(
-            lambda: ts.translate_text(text, from_language='auto', to_language=target_lang, translator='google')
-        )
-        if translated: return translated
-    except Exception:
-        pass
+        url = f"https://googleapis.com{target_lang}&dt=t&q={urllib.parse.quote(text)}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    translated = "".join([part[0] for part in data[0] if part[0]])
+                    return translated
+    except Exception as e:
+        print(f"Ошибка перевода: {e}")
     return "ошибка_перевода"
 
 # Сетка кнопок
@@ -78,29 +73,40 @@ async def cmd_start(message: types.Message):
         reply_markup=get_language_keyboard()
     )
 
-# АВТОНОМНЫЙ ОБРАБОТЧИК ГОЛОСОВЫХ СООБЩЕНИЙ БЕЗ СИСТЕМНЫХ ЗАВИСИМОСТЕЙ
+# ЛЕГКИЙ ОБРАБОТЧИК ГОЛОСА ЧЕРЕЗ GOOGLE WEB SPEECH API БЕЗ СИСТЕМНЫХ ЗАВИСИМОСТЕЙ
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     status_msg = await message.answer("⏳ Скачиваю и распознаю ваше голосовое сообщение...")
     
-    voice_ogg = f"voice_{message.from_user.id}.ogg"
-    
     try:
-        # Скачиваем файл из Telegram
+        # Получаем прямую ссылку на файл ogg от Telegram серверов
         file_info = await bot.get_file(message.voice.file_id)
-        await bot.download_file(file_info.file_path, voice_ogg)
+        file_url = f"https://telegram.org{TOKEN}/{file_info.file_path}"
         
-        # Считываем аудио напрямую через стандартное распознавание речи
-        r = sr.Recognizer()
-        with sr.AudioFile(voice_ogg) as source:
-            audio_data = r.record(source)
-            
-        recognized_text = await asyncio.to_thread(
-            lambda: r.recognize_google(audio_data, language="ru-RU")
-        )
-            
-        if not recognized_text or not recognized_text.strip():
-            raise Exception("Пустой текст")
+        # Скачиваем файл в байты памяти без сохранения на диск сервера
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_url) as resp:
+                if resp.status != 200:
+                    raise Exception("Не удалось скачать файл из Telegram")
+                voice_bytes = await resp.read()
+
+        # Отправляем аудио-байты напрямую в Google Speech API через HTTP запрос
+        google_url = "https://google.com"
+        headers = {"Content-Type": "audio/ogg; codecs=opus; rate=48000"}
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(google_url, data=voice_bytes, headers=headers) as resp:
+                if resp.status == 200:
+                    text_resp = await resp.text()
+                    # Быстро вытягиваем текст из JSON ответа
+                    import json
+                    data = json.loads(text_resp)
+                    if "hypotheses" in data and len(data["hypotheses"]) > 0:
+                        recognized_text = data["hypotheses"][0]["utterance"]
+                    else:
+                        raise Exception("Google не распознал речь")
+                else:
+                    raise Exception(f"Google API вернул статус {resp.status}")
             
         user_texts[message.from_user.id] = recognized_text
         
@@ -112,24 +118,7 @@ async def handle_voice(message: types.Message):
         
     except Exception as e:
         print(f"Ошибка распознавания: {e}")
-        # Если облако ругается на формат, пробуем резервный способ чтения бинарных данных
-        try:
-            with open(voice_ogg, "rb") as f:
-                raw_audio = f.read()
-            r = sr.Recognizer()
-            audio_data = sr.AudioData(raw_audio, sample_rate=48000, sample_width=2)
-            recognized_text = await asyncio.to_thread(lambda: r.recognize_google(audio_data, language="ru-RU"))
-            user_texts[message.from_user.id] = recognized_text
-            await status_msg.edit_text(
-                f"🗣 **Распознанный текст:**\n_«{recognized_text}»_\n\nНа какой язык его перевести?",
-                parse_mode="Markdown",
-                reply_markup=get_language_keyboard()
-            )
-        except Exception:
-            await status_msg.edit_text("❌ Не удалось считать аудио. Пожалуйста, отправьте ваш текст обычным сообщением.")
-    finally:
-        if os.path.exists(voice_ogg): 
-            os.remove(voice_ogg)
+        await status_msg.edit_text("❌ Не удалось считать аудио. Пожалуйста, отправьте ваш текст обычным сообщением.")
 
 # Обработчик текста
 @dp.message()
@@ -138,7 +127,7 @@ async def handle_text(message: types.Message):
     user_texts[message.from_user.id] = message.text
     await message.answer("Текст получен. На какой язык его перевести? Выберите из списка:", reply_markup=get_language_keyboard())
 
-# ОБРАБОТЧИК КНОПОК С СУПЕР-ОЗВУЧКОЙ ДЛЯ ВСЕХ ЯЗЫКОВ МИРА
+# ОБРАБОТЧИК КНОПОК С СУПЕР-ОЗВУЧКОЙ ДЛЯ ВСЕХ ЯЗЫКОВ
 @dp.callback_query(F.data.startswith("to_lang:"))
 async def handle_translation_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
